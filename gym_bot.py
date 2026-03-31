@@ -56,11 +56,11 @@ def actualizar_estado(progreso, racha):
     try:
         ws = sheet.worksheet("Estado")
         fecha_hoy = datetime.now(tz).strftime("%d/%m/%Y")
-        # Ajuste de sintaxis para versiones nuevas de gspread
+        # Usamos la sintaxis más compatible de gspread para evitar errores en Termux
         ws.update(range_name='A2:C2', values=[[progreso, racha, fecha_hoy]])
-        print(f"✅ Excel actualizado: Progreso {progreso}, Racha {racha}")
-    except Exception as e: 
-        print(f"❌ Error actualización estado: {e}")
+        print(f"✅ Excel Actualizado: Ciclo {progreso+1}/4")
+    except Exception as e:
+        print(f"❌ Error al actualizar estado: {e}")
 
 async def procesar_mensaje_peso(update: Update, context: ContextTypes.DEFAULT_TYPE):
     datos = update.message.text.split()
@@ -77,30 +77,32 @@ async def procesar_mensaje_peso(update: Update, context: ContextTypes.DEFAULT_TY
                 series = int(datos[3]) if len(datos) >= 4 else int(fila_data[4])
                 volumen = peso_hoy * reps * series
                 
-                # 1. Registrar en Log
+                # 1. Registrar en el Log (lo que ya hace bien)
                 sheet.worksheet("Log").insert_row([datetime.now(tz).strftime("%d/%m/%Y %H:%M"), id_ejer, peso_hoy, reps, series, volumen, "Telegram"], 2)
                 
-                # 2. Actualizar peso ficha
+                # 2. Actualizar el peso en la ficha de ejercicios
                 idx = lista_ejer.index(fila_data) + 1
                 ejer_ws.update_cell(idx, 3, peso_hoy)
 
-                # 3. Lógica de avance mejorada
-                # Intentamos registrar asistencia (si es el primer contacto del día)
+                # --- 🚀 LÓGICA DE AVANCE MEJORADA ---
+                # Primero, intentamos registrar la asistencia (por si es el primer contacto)
                 asistencia_nueva = registrar_asistencia("GYM")
                 
-                # Chequeamos el estado actual
+                # Pedimos el estado actual
                 est = obtener_estado()
-                
-                # Si es la primera asistencia O si el Excel se quedó trabado en una fecha vieja
-                if asistencia_nueva or est["fecha"] != datetime.now(tz).strftime("%d/%m/%Y"):
-                    print("🚀 Avanzando ciclo...")
+                fecha_hoy_str = datetime.now(tz).strftime("%d/%m/%Y")
+
+                # REGLA DE ORO: Si es una asistencia nueva O si el Excel todavía tiene fecha vieja... AVANZAMOS.
+                if asistencia_nueva or est["fecha"] != fecha_hoy_str:
+                    print("⚙️ Detectado cambio de día o primer ejercicio. Avanzando ciclo...")
                     p, r = est["progreso"] + 1, est["racha"]
                     if p > 3: p, r = 0, r + 1
                     actualizar_estado(p, r)
+                # ------------------------------------
                 
                 await update.message.reply_text(f"✅ **{id_ejer}**: **{peso_hoy}kg**\n📊 {series}x{reps} | Vol: **{volumen}kg**", parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
-            print(f"Error en peso: {e}")
+            print(f"Error en procesar_peso: {e}")
 
 def obtener_rutina_formateada(dia_forzado=None):
     estado = obtener_estado()
