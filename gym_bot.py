@@ -10,6 +10,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from dotenv import load_dotenv
+import json
 
 # --- CARGAR SECRETOS ---
 load_dotenv()
@@ -36,6 +37,33 @@ def get_creds():
     return ServiceAccountCredentials.from_json_keyfile_name("credenciales.json", scope)
 
 agcm = gspread_asyncio.AsyncioGspreadClientManager(get_creds)
+
+async def obtener_nivel_bateria():
+    """Llama a la API de Termux para leer la batería"""
+    try:
+        # Ejecuta el comando de sistema de Termux
+        process = await asyncio.create_subprocess_shell(
+            'termux-battery-status',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+        if stdout:
+            res = json.loads(stdout.decode())
+            return res.get('percentage', 100)
+    except Exception as e:
+        print(f"Error leyendo batería: {e}")
+    return 100
+
+async def verificar_estado_servidor(context: ContextTypes.DEFAULT_TYPE):
+    """Revisa la batería y envía alerta si es baja"""
+    nivel = await obtener_nivel_bateria()
+    if nivel <= 20: # Umbral de alerta
+        await context.bot.send_message(
+            chat_id=CHAT_ID, 
+            text=f"⚠️ **ALERTA DE ENERGÍA**\nEl servidor (celular) tiene {nivel}% de batería. Conéctalo pronto.",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
 # --- FUNCIONES NÚCLEO ASÍNCRONAS ---
 async def obtener_estado(agcm_client):
@@ -249,13 +277,18 @@ async def manejar_botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     opcion = query.data.replace('asist_', '')
-    if await registrar_asistencia(agcm, opcion):
+    exito = await registrar_asistencia(agcm, opcion)
+    
+    if exito:
         if opcion == "GYM":
             estado = await obtener_estado(agcm)
             p, r = estado["progreso"] + 1, estado["racha"]
             if p > 3: p, r = 0, r + 1
             await actualizar_estado(agcm, p, r)
-        await query.edit_message_text(f"Asistencia registrada: **{opcion}**", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(f"✅ Asistencia registrada: **{opcion}**", parse_mode=ParseMode.MARKDOWN)
+    else:
+        # Mensaje de error si ya existe registro hoy
+        await query.edit_message_text(f"⚠️ Ya existe un registro de asistencia para hoy. No se realizaron cambios.", parse_mode=ParseMode.MARKDOWN)
 
 async def mostrar_heatmap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -305,18 +338,28 @@ async def alarma_5am(context: ContextTypes.DEFAULT_TYPE):
     _, ids = await obtener_rutina_formateada(agcm)
     await rafaga_mensajes(context.bot, ids)
 
+async def test_completo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Forzamos escaneo de batería primero
+    nivel = await obtener_nivel_bateria()
+    await update.message.reply_text(f"🔋 Estado del servidor: {nivel}% de batería.")
+    # Luego disparamos la ráfaga normal
+    await alarma_5am(context)
+
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
-    
+
     # Tareas programadas
     app.job_queue.run_daily(alarma_5am, time=dt.time(hour=5, minute=0, tzinfo=tz))
+    app.job_queue.run_repeating(verificar_estado_servidor, interval=3600, first=10) 
 
     # Handlers (Solo responden si el mensaje viene de tu CHAT_ID)
     app.add_handler(CommandHandler("rutina", mostrar_rutina, filters=FiltroAdmin))
     app.add_handler(CommandHandler("heatmap", mostrar_heatmap, filters=FiltroAdmin))
-    app.add_handler(CommandHandler("test", lambda u, c: alarma_5am(c), filters=FiltroAdmin))
+    
+    app.add_handler(CommandHandler("test", test_completo, filters=FiltroAdmin)) 
+    
     app.add_handler(CallbackQueryHandler(manejar_botones)) # Los botones asumen el chat_id del mensaje original
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND) & FiltroAdmin, procesar_mensaje_peso))
-    
-    print("🤖 GymBot V1.0 (Termux Asíncrono) Operativo y Blindado.")
+
+    print("🤖 GymBot V1.1 (Termux Asíncrono) Operativo y Blindado.")
     app.run_polling(drop_pending_updates=True)
