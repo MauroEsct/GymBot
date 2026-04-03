@@ -67,15 +67,20 @@ async def registrar_asistencia(agcm_client, estado_actividad):
         sheet = await client.open("Gym_Log")
         ws_asist = await sheet.worksheet("Asistencia")
         hoy = datetime.now(tz).strftime("%d/%m/%Y")
-        col_fechas = await ws_asist.col_values(1)
         
+        # Leemos las fechas para no duplicar registro hoy
+        col_fechas = await ws_asist.col_values(1)
         if hoy in col_fechas: 
             return False 
 
         dias_es = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
         dia_nombre = dias_es[datetime.now(tz).weekday()]
+        
+        # Obtenemos el estado para el reporte de ciclo
         estado = await obtener_estado(agcm_client)
-        await ws_asist.append_row([hoy, dia_nombre, estado_actividad, f"{estado['progreso'] + 1}/4"])
+        
+        await ws_asist.insert_row([hoy, dia_nombre, estado_actividad, f"{estado['progreso'] + 1}/4"], 2)
+        
         return True
     except Exception as e:
         print(f"Error en asistencia: {e}")
